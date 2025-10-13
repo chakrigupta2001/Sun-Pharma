@@ -1,4 +1,4 @@
-180days inactive computers
+//180days inactive computers
 
 // Pre Block
 path = RefDataQuery.from("UC_internal_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("path")).execute()[0].value.trim()
