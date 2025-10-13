@@ -1,0 +1,540 @@
+//Pre block
+path = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("path")).execute()[0].value.trim()
+inputMap.path = path
+ 
+domain = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("domain")).execute()[0].value.trim()
+inputMap.domainName = domain
+ 
+to = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("emailto")).execute()[0].value.trim()
+inputMap.emailTo = to
+    
+cc = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("emailcc")).execute()[0].value.trim()
+inputMap.emailCC = cc
+ 
+def tz = TimeZone.getTimeZone("Asia/Kolkata")
+def currentdate = new Date().format("dd-MMM-yy HH:mm:ss", tz)
+inputMap.currentdate = currentdate
+
+emailSubject = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("subject4")).execute()[0].value.trim()
+inputMap.emailSubject = emailSubject+currentdate
+  
+Domains = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("Domains")).execute()[0].value.trim()
+inputMap.Domains = Domains
+
+internalemailto = RefDataQuery.from("UC_Computer_accounts").where(RefDataCriteria.exp("key").equalTo("internalemails")).execute()[0].value.trim()
+inputMap.internalemailTo = internalemailto
+
+
+// Main Block
+//computer audit iworkflow
+
+//Initiate the input variables
+init{
+    AttachmentPath = inputMap.path;
+    domainName = inputMap.domainName;
+    emailTo = inputMap.emailTo;
+    emailCC = inputMap.emailCC;
+    emailSubject = inputMap.emailSubject;
+    internalemailTO = inputMap.internalemailTo;
+    currentdate = inputMap.currentdate;
+    DomainNames = inputMap.Domains;
+    AttachmentName = ""
+    AttachmentName1 = ""
+ 
+}
+
+//Connect to ADComputer, call the CreatedComputerAccounts function and generate a file
+step("getReport", StepType.ONFUNCTION){
+Map<String, Object> EntityMapP = new HashMap<>();
+        EntityMapP.put("Name", processMap.domainName);
+        Set<String> EntityLabelsP = new HashSet<>();
+        EntityLabelsP.add("ADDomain");
+        EntityInstanceP =  ceb.get(EntityLabelsP, EntityMapP);
+        Entity = ceb.get(EntityInstanceP.getId(), EntityLabelsP);
+    Entity.CreatedComputerAccounts(path:processMap.AttachmentPath,Domains:processMap.DomainNames,ioutput:"getReport_output");
+}
+.to({processMap.getReport_output.returnCode == 0 && processMap.getReport_output.outputStream.contains("Details Saved")}, "Get Encoded file")
+.to({processMap.getReport_output.returnCode == 0 && processMap.getReport_output.outputStream.contains("No new computer accounts created today.")}, "getComputerDisabledReport")
+//.to({processMap.getReport_output.returnCode == 0 && processMap.getReport_output.outputStream.contains("unable to connect error")}, "Connectivity issue")
+.elseTo("ERROR")
+
+//Connect to ADComputer, call the DisabledComputerAccounts function and generate a file
+step("getComputerDisabledReport", StepType.ONFUNCTION){
+Map<String, Object> EntityMapP = new HashMap<>();
+        EntityMapP.put("Name", processMap.domainName);
+        Set<String> EntityLabelsP = new HashSet<>();
+        EntityLabelsP.add("ADDomain");
+        EntityInstanceP =  ceb.get(EntityLabelsP, EntityMapP);
+        Entity = ceb.get(EntityInstanceP.getId(), EntityLabelsP);
+    Entity.DisabledComputerAccounts(path:processMap.AttachmentPath,Domains:processMap.DomainNames,ioutput:"getComputerDisabledReport_output");
+}
+.to({processMap.getComputerDisabledReport_output.returnCode == 0 && processMap.getComputerDisabledReport_output.outputStream.contains("Details Saved")}, "Get Encoded Computer Disabled File")
+.to({processMap.getComputerDisabledReport_output.returnCode == 0 && processMap.getComputerDisabledReport_output.outputStream.contains("No disabled computer accounts found modified in the last day.")}, "Get File on Ignio")
+.elseTo("ERROR")
+
+//If Computer Disabled file has generated, Encode the csv file from getEncodedFile function
+step("Get Encoded file", StepType.ONFUNCTION){
+processMap.AttachmentName = processMap.getReport_output.filename
+subject.getEncodedFile(path:processMap.AttachmentPath,fileName:processMap.AttachmentName, ioutput:"getEncodedFile_output")
+//processMap.StepOneOutput = 0
+}.to({processMap.getEncodedFile_output.returnCode == 0},"getComputerDisabledReport")
+.elseTo("ERROR")
+
+//If Computer Disabled file has generated, Encode the csv file from getEncodedFile function
+step("Get Encoded Computer Disabled File",StepType.ONFUNCTION){
+processMap.AttachmentName1 = processMap.getComputerDisabledReport_output.filename
+subject.getEncodedFile(path:processMap.AttachmentPath,fileName:processMap.AttachmentName1, ioutput:"getEncodedComputerDisabledFile_output")
+}.to({processMap.getEncodedComputerDisabledFile_output.returnCode == 0},"Get File on Ignio")
+.elseTo("ERROR")
+
+/*
+//If Connectivity issue Happends send this mail
+step("Connectivity issue",StepType.ONIGNIO){
+    Mailbody = """Dear User, <br><br> Connectivtiy issue found in the AD Domain server while fetching Computer Account Created/Disabled use case.
+              <br>Kindly look into it and genertate the report Manually.
+   
+           <br><br>Thank You,<br>Team ignio
+   
+    <br><br><b>Note: This is an automatically generated mail. Please do not reply.</b> """
+ 
+    def op = iAction.Collaboration.SendMail(Body:Mailbody,Subject:processMap.emailSubject,To:processMap.internalemailTo)
+    processMap.one = 0
+}.to({processMap.one==0},"SUCCESS")
+.elseTo("ERROR")*/
+
+
+//Convert the file format for using attachment in mail
+step("Get File on Ignio", StepType.ONIGNIO){
+    if(processMap.getReport_output.outputStream.contains("Details Saved") && processMap.getComputerDisabledReport_output.outputStream.contains("Details Saved"))
+    {
+        processMap.zipContent = processMap.getEncodedFile_output.outputStream
+        def zipFileBytes = org.codehaus.groovy.runtime.EncodingGroovyMethods.decodeBase64(processMap.zipContent)
+        def zipFile = new File(processMap.AttachmentName)
+        def fos = new java.io.FileOutputStream(zipFile)
+        fos.write(zipFileBytes)
+        fos.close()
+        def MAX_SIZE = 3000000L
+        def zipFileSize = zipFile.size()
+        //non editable file
+        //zipFile.setReadOnly()
+        
+        processMap.zipContent1 = processMap.getEncodedComputerDisabledFile_output.outputStream
+        def zipFileBytes1 = org.codehaus.groovy.runtime.EncodingGroovyMethods.decodeBase64(processMap.zipContent1)
+        def zipFile1 = new File(processMap.AttachmentName1)
+        def fos1 = new java.io.FileOutputStream(zipFile1)
+        fos1.write(zipFileBytes1)
+        fos1.close()
+        def zipFileSize1 = zipFile1.size()
+        //non editable file
+        //zipFile1.setReadOnly()
+        
+        def creationdictionary = processMap.getReport_output.hashMap
+        def jsonSlurper1 = new groovy.json.JsonSlurper()
+        def creationcounts = jsonSlurper1.parseText(creationdictionary)
+
+        def disabledictionary = processMap.getComputerDisabledReport_output.hashMap
+        def jsonSlurper2 = new groovy.json.JsonSlurper()
+        def disablecounts = jsonSlurper2.parseText(disabledictionary)
+
+        def totalcountdictionary = processMap.getReport_output.totalcounts
+        def jsonSlurper3 = new groovy.json.JsonSlurper()
+        def totalcomputercounts = jsonSlurper3.parseText(totalcountdictionary)
+
+        def totalcreateddictionary = processMap.getReport_output.totalcreatedsum
+        def jsonSlurper4 = new groovy.json.JsonSlurper()
+        def createdsum = jsonSlurper4.parseText(totalcreateddictionary)
+
+        def totaldisableddictionary = processMap.getComputerDisabledReport_output.totaldisabledsum
+        def jsonSlurper5 = new groovy.json.JsonSlurper()
+        def disabledsum = jsonSlurper5.parseText(totaldisableddictionary)
+
+        def totalcomptersdictionary = processMap.getReport_output.totalcomputerscounts
+        def jsonSlurper6 = new groovy.json.JsonSlurper()
+        def totalcomputerssum = jsonSlurper6.parseText(totalcomptersdictionary)
+
+
+        date=processMap.currentdate
+        Mailbody = """<html>
+        <body>
+        Dear User,<br><br> 
+        ignio has generated the Details for Computer Accounts created and disabled dated on """ +date+ """. Kindly find the attached reports.
+        <style>
+                table{
+                border-collapse: collapse;            
+                }
+                th,td {
+                    border: 2px solid black;
+                    padding; 8px;
+                }
+                th {
+                    background-color: #f2f2f2;
+                }
+                td{
+                text-align: center;
+                vertical-align: middle;
+                }
+            </style>
+        
+        <br><br><table style="width:50%">
+                <tr>
+                        <th>Domains</th>
+                        <th>Created Computer Accounts</th>
+                        <th>Disabled Computer Accounts</th>
+                        <th>Total Computers</th>
+                    </tr>"""
+        creationcounts.each {domain, counts ->
+            def Disablecount = disablecounts.get(domain, 0)
+            def TotalUsercounts = totalcomputercounts.get(domain, 0)
+            Mailbody +='<tr>\n'
+            Mailbody +=' <td>' + domain + '</td>\n'
+            Mailbody +=' <td>' + counts + '</td>\n'
+            Mailbody +=' <td>' + Disablecount + '</td>\n'
+            Mailbody +=' <td>' + TotalUsercounts + '</td>\n'
+            Mailbody +=' </tr>\n'
+            }
+        Mailbody +="""
+                    
+                    <tr>
+                        <th>Total</th>
+                        <th>""" +createdsum+ """</th>
+                        <th>""" +disabledsum+ """</th>
+                        <th>""" +totalcomputerssum+ """</th>
+                    </tr> 
+                  
+        
+        </table>
+        
+        
+        <br><br>Thank You,<br>Team ignio
+        
+        <br><br><b>Note: This is an automatically generated mail. Please do not reply.</b> 
+        </body>
+        </html>
+        """
+
+        if(zipFileSize < MAX_SIZE & zipFileSize1 < MAX_SIZE){
+            org.springframework.web.multipart.MultipartFile[] filesForAttachment= new org.springframework.web.multipart.MultipartFile[2]
+            org.springframework.web.multipart.MultipartFile[] multipartFileArray1=fileUtils.createMultiPartFileFromFile(zipFile)
+            filesForAttachment[0]=multipartFileArray1[0]
+            org.springframework.web.multipart.MultipartFile[] multipartFileArray2=fileUtils.createMultiPartFileFromFile(zipFile1)
+            filesForAttachment[1]=multipartFileArray2[0]
+            iAction.Collaboration.SendMail(Body:Mailbody,Subject:processMap.emailSubject,To:processMap.emailTo,CC:processMap.emailCC,hasAttachment:filesForAttachment)
+        }
+        zipFile.delete()
+        zipFile1.delete()
+        processMap.StepTwoOutput=0
+    }
+    else if(processMap.getReport_output.outputStream.contains("Details Saved"))
+    {
+        processMap.zipContent = processMap.getEncodedFile_output.outputStream
+        def zipFileBytes = org.codehaus.groovy.runtime.EncodingGroovyMethods.decodeBase64(processMap.zipContent)
+        def zipFile = new File(processMap.AttachmentName)
+        def fos = new java.io.FileOutputStream(zipFile)
+        fos.write(zipFileBytes)
+        fos.close()
+        def MAX_SIZE = 3000000L
+        def zipFileSize = zipFile.size()
+        //non editable file
+        // zipFile.setReadOnly()
+        def creationdictionary = processMap.getReport_output.hashMap
+        def jsonSlurper1 = new groovy.json.JsonSlurper()
+        def creationcounts = jsonSlurper1.parseText(creationdictionary)
+
+        def disabledictionary = processMap.getComputerDisabledReport_output.hashMap
+        def jsonSlurper2 = new groovy.json.JsonSlurper()
+        def disablecounts = jsonSlurper2.parseText(disabledictionary)
+
+        def totalcountdictionary = processMap.getReport_output.totalcounts
+        def jsonSlurper3 = new groovy.json.JsonSlurper()
+        def totalcomputercounts = jsonSlurper3.parseText(totalcountdictionary)
+
+        def totalcreateddictionary = processMap.getReport_output.totalcreatedsum
+        def jsonSlurper4 = new groovy.json.JsonSlurper()
+        def createdsum = jsonSlurper4.parseText(totalcreateddictionary)
+
+        def totaldisableddictionary = processMap.getComputerDisabledReport_output.totaldisabledsum
+        def jsonSlurper5 = new groovy.json.JsonSlurper()
+        def disabledsum = jsonSlurper5.parseText(totaldisableddictionary)
+
+        def totalcomptersdictionary = processMap.getReport_output.totalcomputerscounts
+        def jsonSlurper6 = new groovy.json.JsonSlurper()
+        def totalcomputerssum = jsonSlurper6.parseText(totalcomptersdictionary)
+
+        date=processMap.currentdate
+
+        Mailbody = """<html>
+        <body>
+        Dear User,<br><br> ignio has generated Computer Accounts Created Dated on """ +date+""". Kindly find the attached report.
+        <br><br> Additionally, there are no Disabled computer accounts that were modified in the last day.
+        <style>
+                table{
+                border-collapse: collapse;            
+                }
+                th,td {
+                    border: 2px solid black;
+                    padding; 8px;
+                }
+                th {
+                    background-color: #f2f2f2;
+                }
+                td{
+                text-align: center;
+                vertical-align: middle;
+                }
+            </style>
+        
+        <br><br><table style="width:50%">
+                <tr>
+                        <th>Domains</th>
+                        <th>Created Computer Accounts</th>
+                        <th>Disabled Computer Accounts</th>
+                        <th>Total Computers</th>
+                    </tr>"""
+        creationcounts.each {domain, counts ->
+            def Disablecount = disablecounts.get(domain, 0)
+            def TotalUsercounts = totalcomputercounts.get(domain, 0)
+            Mailbody +='<tr>\n'
+            Mailbody +=' <td>' + domain + '</td>\n'
+            Mailbody +=' <td>' + counts + '</td>\n'
+            Mailbody +=' <td>' + Disablecount + '</td>\n'
+            Mailbody +=' <td>' + TotalUsercounts + '</td>\n'
+            Mailbody +=' </tr>\n'
+            }
+        Mailbody +="""
+                    
+                    <tr>
+                        <th>Total</th>
+                        <th>""" +createdsum+ """</th>
+                        <th>""" +disabledsum+ """</th>
+                        <th>""" +totalcomputerssum+ """</th>
+                    </tr> 
+                  
+        
+        </table>        
+        
+        <br><br>Thank You,<br>Team ignio
+        
+        <br><br><b>Note: This is an automatically generated mail. Please do not reply.</b> 
+        </body>
+        </html>
+        """
+        if(zipFileSize < MAX_SIZE){
+        org.springframework.web.multipart.MultipartFile[] filesForAttachment= fileUtils.createMultiPartFileFromFile(zipFile)
+        iAction.Collaboration.SendMail(Body:Mailbody,Subject:processMap.emailSubject,To:processMap.emailTo,CC:processMap.emailCC,hasAttachment:filesForAttachment)
+        }
+        zipFile.delete()
+        processMap.StepThreeOutput=0
+    }
+    else if(processMap.getComputerDisabledReport_output.outputStream.contains("Details Saved"))
+    {
+        processMap.zipContent1 = processMap.getEncodedComputerDisabledFile_output.outputStream
+        def zipFileBytes1 = org.codehaus.groovy.runtime.EncodingGroovyMethods.decodeBase64(processMap.zipContent1)
+        def zipFile1 = new File(processMap.AttachmentName1)
+        def fos1 = new java.io.FileOutputStream(zipFile1)
+        fos1.write(zipFileBytes1)
+        fos1.close()
+        def MAX_SIZE = 3000000L
+        def zipFileSize1 = zipFile1.size()
+        //non editable file
+        // zipFile1.setReadOnly()
+
+        def creationdictionary = processMap.getReport_output.hashMap
+        def jsonSlurper1 = new groovy.json.JsonSlurper()
+        def creationcounts = jsonSlurper1.parseText(creationdictionary)
+
+        def disabledictionary = processMap.getComputerDisabledReport_output.hashMap
+        def jsonSlurper2 = new groovy.json.JsonSlurper()
+        def disablecounts = jsonSlurper2.parseText(disabledictionary)
+
+        def totalcountdictionary = processMap.getComputerDisabledReport_output.totalcounts
+        def jsonSlurper3 = new groovy.json.JsonSlurper()
+        def totalcomputercounts = jsonSlurper3.parseText(totalcountdictionary)
+
+        def totalcreateddictionary = processMap.getReport_output.totalcreatedsum
+        def jsonSlurper4 = new groovy.json.JsonSlurper()
+        def createdsum = jsonSlurper4.parseText(totalcreateddictionary)
+        
+        def totaldisableddictionary = processMap.getComputerDisabledReport_output.totaldisabledsum
+        def jsonSlurper5 = new groovy.json.JsonSlurper()
+        def disabledsum = jsonSlurper5.parseText(totaldisableddictionary)
+
+        def totalcomptersdictionary = processMap.getReport_output.totalcomputerscounts
+        def jsonSlurper6 = new groovy.json.JsonSlurper()
+        def totalcomputerssum = jsonSlurper6.parseText(totalcomptersdictionary)
+
+        date=processMap.currentdate
+
+        Mailbody = """<html>
+        <body>
+        Dear User,<br><br> ignio has generated Computer Accounts Disabled Dated on """ +date+""". Kindly find the attached report.
+        <br><br>Additionally, there are no created computer accounts that were modified in the last day.
+        <style>
+                table{
+                border-collapse: collapse;            
+                }
+                th,td {
+                    border: 2px solid black;
+                    padding; 8px;
+                }
+                th {
+                    background-color: #f2f2f2;
+                }
+                td{
+                text-align: center;
+                vertical-align: middle;
+                }
+            </style>
+        
+        <br><br><table style="width:50%">
+                <tr>
+                        <th>Domains</th>
+                        <th>Created Computer Accounts</th>
+                        <th>Disabled Computer Accounts</th>
+                        <th>Total Computers</th>
+                    </tr>"""
+        creationcounts.each {domain, counts ->
+            def Disablecount = disablecounts.get(domain, 0)
+            def TotalUsercounts = totalcomputercounts.get(domain, 0)
+            Mailbody +='<tr>\n'
+            Mailbody +=' <td>' + domain + '</td>\n'
+            Mailbody +=' <td>' + counts + '</td>\n'
+            Mailbody +=' <td>' + Disablecount + '</td>\n'
+            Mailbody +=' <td>' + TotalUsercounts + '</td>\n'
+            Mailbody +=' </tr>\n'
+            }
+        Mailbody +="""
+                    
+                    <tr>
+                        <th>Total</th>
+                        <th>""" +createdsum+ """</th>
+                        <th>""" +disabledsum+ """</th>
+                        <th>""" +totalcomputerssum+ """</th>
+                    </tr> 
+                  
+        
+        </table>
+        
+        
+        <br><br>Thank You,<br>Team ignio
+        
+        <br><br><b>Note: This is an automatically generated mail. Please do not reply.</b> 
+        </body>
+        </html>
+        """
+        
+        if(zipFileSize1 < MAX_SIZE){
+        org.springframework.web.multipart.MultipartFile[] filesForAttachment= fileUtils.createMultiPartFileFromFile(zipFile1)
+        iAction.Collaboration.SendMail(Body:Mailbody,Subject:processMap.emailSubject,To:processMap.emailTo,CC:processMap.emailCC,hasAttachment:filesForAttachment)
+        }
+        zipFile1.delete()
+        processMap.StepFourOutput=0
+    }
+    else
+    {
+        
+        def creationdictionary = processMap.getReport_output.hashMap
+        def jsonSlurper1 = new groovy.json.JsonSlurper()
+        def creationcounts = jsonSlurper1.parseText(creationdictionary)
+
+        def disabledictionary = processMap.getComputerDisabledReport_output.hashMap
+        def jsonSlurper2 = new groovy.json.JsonSlurper()
+        def disablecounts = jsonSlurper2.parseText(disabledictionary)
+
+        def totalcountdictionary = processMap.getReport_output.totalcounts
+        def jsonSlurper3 = new groovy.json.JsonSlurper()
+        def totalcomputercounts = jsonSlurper3.parseText(totalcountdictionary)
+
+        def totalcreateddictionary = processMap.getReport_output.totalcreatedsum
+        def jsonSlurper4 = new groovy.json.JsonSlurper()
+        def createdsum = jsonSlurper4.parseText(totalcreateddictionary)
+
+        def totaldisableddictionary = processMap.getComputerDisabledReport_output.totaldisabledsum
+        def jsonSlurper5 = new groovy.json.JsonSlurper()
+        def disabledsum = jsonSlurper5.parseText(totaldisableddictionary)
+
+        def totalcomptersdictionary = processMap.getReport_output.totalcomputerscounts
+        def jsonSlurper6 = new groovy.json.JsonSlurper()
+        def totalcomputerssum = jsonSlurper6.parseText(totalcomptersdictionary)
+
+
+        date=processMap.currentdate
+        Mailbody = """<html>
+        <body>
+        Dear User,<br><br> 
+        ignio has generated the Details for Computer Accounts created and disabled dated on """ +date+ """. 
+        <br> No Created and Disbled Computer Accounts were happended in the last day.
+        <style>
+                table{
+                border-collapse: collapse;            
+                }
+                th,td {
+                    border: 2px solid black;
+                    padding; 8px;
+                }
+                th {
+                    background-color: #f2f2f2;
+                }
+                td{
+                text-align: center;
+                vertical-align: middle;
+                }
+            </style>
+        
+        <br><br><table style="width:50%">
+                <tr>
+                        <th>Domains</th>
+                        <th>Created Computer Accounts</th>
+                        <th>Disabled Computer Accounts</th>
+                        <th>Total Computers</th>
+                    </tr>"""
+        creationcounts.each {domain, counts ->
+            def Disablecount = disablecounts.get(domain, 0)
+            def TotalUsercounts = totalcomputercounts.get(domain, 0)
+            Mailbody +='<tr>\n'
+            Mailbody +=' <td>' + domain + '</td>\n'
+            Mailbody +=' <td>' + counts + '</td>\n'
+            Mailbody +=' <td>' + Disablecount + '</td>\n'
+            Mailbody +=' <td>' + TotalUsercounts + '</td>\n'
+            Mailbody +=' </tr>\n'
+            }
+        Mailbody +="""
+                    
+                    <tr>
+                        <th>Total</th>
+                        <th>""" +createdsum+ """</th>
+                        <th>""" +disabledsum+ """</th>
+                        <th>""" +totalcomputerssum+ """</th>
+                    </tr> 
+                  
+        
+        </table>
+        
+        
+        <br><br>Thank You,<br>Team ignio
+        
+        <br><br><b>Note: This is an automatically generated mail. Please do not reply.</b> 
+        </body>
+        </html>
+        """
+        iAction.Collaboration.SendMail(Body:Mailbody,Subject:processMap.emailSubject,To:processMap.emailTo,CC:processMap.emailCC)
+        
+        processMap.StepFiveOutput=0
+    }
+}.to({processMap.StepTwoOutput==0},"SUCCESS")
+.to({processMap.StepThreeOutput==0},"SUCCESS")
+.to({processMap.StepFourOutput==0},"SUCCESS")
+.to({processMap.StepFiveOutput==0},"SUCCESS")
+.elseTo("ERROR")
+
+
+//if Successfully completed all steps without error
+end("SUCCESS", Status.SUCCESS)
+{
+    outputMap << [outputStream:"Successfully send the mail"]
+}
+//if any error come
+end("ERROR", Status.ERROR)
+{
+    outputMap << [outputStream:"Unable to send the mail"]
+}
+
