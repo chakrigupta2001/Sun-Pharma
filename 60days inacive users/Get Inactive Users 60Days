@@ -1,0 +1,84 @@
+# Inactive_Users_60Days.ps1
+$cutoffDate = (Get-Date).AddDays(-60)
+$datetime = Get-Date -Format 'dd-MMM-yyyy_HHmmss'
+$reportName = "Inactive_Users_60Days_" + $datetime + ".csv"
+ 
+$domainControllers = $inputMap.domains -split ','
+$results = @()
+$usercounts = [ordered]@{}
+$totalUserCount = 0
+
+foreach ($dc in $domainControllers) {
+    Write-Output "Processing domain: $dc"
+    $connected = $false
+    $startTime = Get-Date
+ 
+    while ((Get-Date) -lt $startTime.AddSeconds(10) -and -not $connected) {
+        try {
+            $users = Get-ADUser -Filter {Enabled -eq $true -and LastLogonDate -le $cutoffDate} -Server $dc -Credential $concreds1 -Properties SamAccountName, Name, Enabled, PasswordExpired, WhenCreated, WhenChanged, employeeType, DistinguishedName, EmployeeID, EmployeeNumber, LastLogonDate, PasswordLastSet, AccountExpirationDate, mail, DisplayName
+            $connected = $true
+        } catch {
+            Write-Output "Failed to connect to $dc. Retrying..."
+            Start-Sleep -Seconds 5
+        }
+    }
+ 
+    if (-not $connected) {
+        $usercounts[$dc] = "Unable to connect"
+        continue
+    }
+ 
+    $usercounts[$dc] = 0
+    foreach ($user in $users) {
+        $results += [PSCustomObject]@{
+           Domain                = $dc
+            SAMAccountName        = $user.SamAccountName
+            Name                  = $user.Name
+            Enabled               = $user.Enabled
+            PasswordExpired       = $user.PasswordExpired
+            WhenCreated           = $user.WhenCreated
+            WhenChanged           = $user.WhenChanged
+            employeeType          = $user.employeeType
+            DistinguishedName     = $user.DistinguishedName
+            EmployeeID            = $user.EmployeeID
+            EmployeeNumber        = $user.EmployeeNumber
+            LastLogonDate         = $user.LastLogonDate
+            PasswordLastSet       = $user.PasswordLastSet
+            AccountExpirationDate = $user.AccountExpirationDate
+            mail                  = $user.mail
+            DisplayName           = $user.DisplayName
+        }
+        $usercounts[$dc]++
+        $totalUserCount++
+    }
+}
+ 
+$outputCsvPath = Join-Path -Path $inputMap.path -ChildPath $reportName
+if ($results.Count -gt 0) {
+    $results | Export-Csv -Path $outputCsvPath -NoTypeInformation
+    Write-Output "Details Saved | $reportName | $($usercounts | ConvertTo-Json -Compress) | $totalUserCount"
+} else {
+    Write-Output "No Inactive users found for the past 60 days | $($usercounts | ConvertTo-Json -Compress) | 0"
+}
+ 
+<# preblockPostblock to send iworkflow code
+
+output = outputMap.outputStream;
+if(output.contains("No Inactive users found")){
+    splitoutput = output.split("\\|")
+    hashMap = splitoutput[1].trim()
+    totalcounts = splitoutput[2].trim()
+    outputMap << [hashMap:hashMap]
+    outputMap << [totalcounts:totalcounts]
+    outputMap << [outputStream: output]
+} else {
+    splitoutput = output.split("\\|")
+    filename = splitoutput[1].trim()
+    hashMap = splitoutput[2].trim()
+    totalcounts = splitoutput[3].trim()
+    outputMap << [filename:filename]
+    outputMap << [hashMap:hashMap]
+    outputMap << [totalcounts:totalcounts]
+    outputMap << [outputStream: output]
+}
+#>
