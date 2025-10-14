@@ -1,0 +1,645 @@
+//Pre block
+// 
+def currentdate = new Date().format("dd-MMM-YY")
+inputMap.currentdate = currentdate
+ 
+//def subject = RefDataQuery.from("Linux_Mail_Recipients").where(RefDataCriteria.exp("key").equalTo("subject")).execute()[0].values.trim()
+inputMap.emailsubject = "VMware License Report - " + currentdate
+ 
+def to = RefDataQuery.from("VMWare_Mail_Recipients").where(RefDataCriteria.exp("key").equalTo("emailto")).execute()[0].value.trim()
+inputMap.emailTo = to
+ 
+def cc = RefDataQuery.from("VMWare_Mail_Recipients").where(RefDataCriteria.exp("key").equalTo("emailcc")).execute()[0].value.trim()
+inputMap.emailCC = cc
+
+jumpServer = RefDataQuery.from("VMWare_Mail_Recipients").where(RefDataCriteria.exp("key").equalTo("jumpServer")).execute()[0].value.trim()
+inputMap.Jumpserver = jumpServer
+ 
+parentVCenter = RefDataQuery.from("VMWare_Mail_Recipients").where(RefDataCriteria.exp("key").equalTo("parentVCenterNode")).execute()[0].value.trim()
+inputMap.ParentvCenter = parentVCenter
+
+// Fetch rows from the reference table
+def rows = RefDataQuery.from("vCenter_IP_List").execute()
+def ipList = rows.collect { it["IPAddress"] }.findAll { it }  // Extract vCenter IPs from the column "vCenterIP"
+def vcenterName = rows.collect { it["vCenterName"] }.findAll { it }
+inputMap.vCenterIPs = ipList
+inputMap.vCenterName = vcenterName
+
+
+//Main block
+init {
+    currentdate = inputMap.currentdate
+    emailCC = inputMap.emailCC
+    emailTo = inputMap.emailTo
+    emailsubject = inputMap.emailsubject
+    Jumpserver = inputMap.Jumpserver
+    ParentvCenter = inputMap.ParentvCenter
+    vCenterIPs = inputMap.vCenterIPs
+    vCenterName =inputMap.vCenterName
+    
+    index = 0
+ 
+    totalCount = 0
+    successCount = 0
+    failedCount = 0
+    noLicenseCount =  0
+    connectionFailedCount =  0
+    exceptionCount =  0
+    
+ 
+    //report = "vCenterIP,Scope,Name,EditionKey,LicenseKey,Total,Used,ExpirationDate,CostUnit,ProductName,ProductVersion\n"
+    //report = "VCenterName,VCenterIP,HostIP,Scope,Name,EditionKey,LicenseKey,Total,Used,ExpirationDate,CostUnit,ProductName,ProductVersion\n"
+    report = "vCenter Name,vcenter IP,Host,NumCpu,CpuUsageMhz,MemoryTotalGB,MemoryUsageGB,Version,Build,LicenseKey,ProcessorType,SerialNumber,ConnectionState\n"
+}
+
+step("CheckNextVC", StepType.ONIGNIO) {
+    if (processMap.index < processMap.vCenterIPs.size()) {
+        processMap.nextStep = "CheckNodeAvailablity"
+    } else {
+        processMap.nextStep = "SendEmail"
+    }
+}
+.to({ processMap.nextStep == "CheckNodeAvailablity" }, "CheckNodeAvailablity")
+.to({ processMap.nextStep == "SendEmail" }, "SendEmail")
+ 
+step("CheckNodeAvailablity", StepType.ONFUNCTION) {
+   
+    try {  
+        subject.igniovCenterNodeAvailabilityCheck(
+            vCenterName: processMap.ParentvCenter,
+            ioutput: "CheckNodeAvailablity_output"
+        )
+    } catch(e) {
+        processMap.log = "Unable to Check vCenter ignio Node present or not, IO Error: " + e.message
+        processMap.exitCode = 1
+    }
+}
+.to({ processMap.CheckNodeAvailablity_output.returnCode == 0 && processMap.CheckNodeAvailablity_output.outputStream.contains("vCenter Present") }, "FetchLicense")
+.to({ processMap.CheckNodeAvailablity_output.returnCode == 0 && processMap.CheckNodeAvailablity_output.outputStream.contains("vCenter Not Present") }, "ignioNodeFailMail")
+.elseTo("FailureSendMail")
+
+step("FetchLicense", StepType.ONFUNCTION) {
+    
+    def vCenterUserName = processMap.CheckNodeAvailablity_output.userName   //"ignio.support@vsphere.local"
+    LOG.error(vCenterUserName)
+    def vCenterPassword = processMap.CheckNodeAvailablity_output.Password   //"Welcome@123"
+    LOG.error(vCenterPassword)
+
+    def vcenterIP = processMap.vCenterIPs[processMap.index]  // This is the dynamic input
+    def vcentername = processMap.vCenterName[processMap.index]
+    
+    LOG.error("Processing vCenterName: " + vcentername + ", vCenterIP: " + vcenterIP)
+    
+    Map<String, Object> entityMap = new HashMap<>()
+    entityMap.put("CSName", processMap.Jumpserver)  // Static proxy entity IP
+    Set<String> entityLabels = new HashSet<>()
+    entityLabels.add("Windows")  // Adjust this label as per your blueprint tag
+    
+    def entityInstance = ceb.get(entityLabels, entityMap)
+    def entity = ceb.get(entityInstance.getId(), entityLabels)
+ 
+    // Now pass the vCenter IP as input to the function
+    entity.fetch_vCenter_Host_Licenses(
+            vCenterUserName: vCenterUserName,
+            vCenterPassword: vCenterPassword,
+            ip: vcenterIP, 
+            vCName: vcentername, 
+            ioutput: "output_report"
+            )
+}
+.to({ true }, "AppendReport")
+
+/* Original script
+
+step("AppendReport", StepType.ONIGNIO) {
+    def ip = processMap.vCenterIPs[processMap.index]
+    def vcenterName = processMap.vCenterName[processMap.index]
+
+    if (processMap.output_report?.outputStream) {
+        processMap.report += processMap.output_report.outputStream+ "\n"
+        processMap.successCount++
+        processMap.totalCount++
+    } else {
+        def errStream = processMap.output_report?.errorStream ?: "Unknown Error"
+        errStream = errStream.replaceAll("[\\r\\n]+", " ").replace(",", " ")
+        //processMap.report += ip + ",Error: " + errStream + "\n"
+        //processMap.report +=  vcenterName+ ip+ ",Error: " + errStream + ", , , , , , , , ,bbbb \n"
+        processMap.report += vcenterName +","+ ip + ",,,ERROR: " + errStream + ",,,,,,,\n"
+        processMap.failedCount++
+        processMap.totalCount++
+    }
+
+    processMap.index++
+}.to({ true }, "CheckNextVC")
+.elseTo("ERROR")*/
+
+/* Version 1 : all are failure counts 
+
+step("AppendReport", StepType.ONIGNIO) {  
+    def ip = processMap.vCenterIPs[processMap.index]  
+    def vcenterName = processMap.vCenterName[processMap.index]  
+ 
+    if (processMap.output_report?.outputStream) {  
+        def outStream = processMap.output_report.outputStream.toString().trim()
+ 
+        // Keywords that indicate failure even if they are in output stream
+        def failureIndicators = ["NO_LICENSE_FOUND", "CONNECTION_FAILED", "EXCEPTION"]
+ 
+        boolean isFailure = failureIndicators.any { keyword -> outStream.contains(keyword) }
+ 
+        processMap.report += outStream + "\n"
+ 
+        if (isFailure) {
+            processMap.failedCount++
+        } else {
+            processMap.successCount++
+        }
+ 
+        processMap.totalCount++
+ 
+    } else {  
+        def errStream = processMap.output_report?.errorStream ?: "Unknown Error"  
+        errStream = errStream.replaceAll("[\\r\\n]+", " ").replace(",", " ")  
+        processMap.report += vcenterName + "," + ip + ",,,ERROR: " + errStream + ",,,,,,,\n"  
+        processMap.failedCount++  
+        processMap.totalCount++  
+    }  
+ 
+    processMap.index++  
+}
+.to({ true }, "CheckNextVC")  
+.elseTo("ERROR")*/
+
+step("AppendReport", StepType.ONIGNIO) {  
+    def ip = processMap.vCenterIPs[processMap.index]  
+    def vcenterName = processMap.vCenterName[processMap.index]  
+ 
+
+    if (processMap.output_report?.outputStream) {  
+        def outStream = processMap.output_report.outputStream.toString().trim()
+ 
+        // Check and increment based on specific keywords
+        if (outStream.contains("NO_LICENSE_FOUND")) {
+            processMap.noLicenseCount++
+            processMap.failedCount++
+        } else if (outStream.contains("CONNECTION_FAILED")) {
+            processMap.connectionFailedCount++
+            processMap.failedCount++
+        } else if (outStream.contains("EXCEPTION")) {
+            processMap.exceptionCount++
+            processMap.failedCount++
+        } else {
+            processMap.successCount++
+        }
+ 
+    processMap.report += outStream + "\n"
+        processMap.totalCount++
+ 
+    } else {  
+        def errStream = processMap.output_report?.errorStream ?: "Unknown Error"  
+        errStream = errStream.replaceAll("[\\r\\n]+", " ").replace(",", " ")  
+        processMap.report += vcenterName + "," + ip + ",,,,,,,,,,,ERROR: " + errStream + "\n"  
+
+        processMap.failedCount++  
+        processMap.totalCount++  
+    }  
+ 
+    processMap.index++  
+}
+.to({ true }, "CheckNextVC")  
+.elseTo("ERROR")
+
+
+ 
+step("SendEmail", StepType.ONIGNIO) {
+    def date = processMap.currentdate
+    def fileName = "VMware_License_Report_" + date + ".csv"
+    def emailBody = """
+        <html><body>
+        Dear User,<br><br>
+        ignio has generated the <b>VMware License Report</b> as of <b>""" +date+ """</b>.<br><br>
+        <h3>VCenter Host License Report Summary</h3>
+        <table cellpadding="6" cellspacing="0" border="0" style="background-color: #f9f9f9; border: 1px solid #dddddd; border-radius: 6px;">
+                  <tr>
+                    <td><b>Success Count:</b></td>
+                    <td>""" + processMap.successCount + """</td>
+                  </tr>
+                  <tr>
+                    <td><b>Failure Count:</b></td>
+                    <td>""" + processMap.failedCount + """</td>
+                  </tr>
+                  <tr>
+                    <td><b>Total Count:</b></td>
+                    <td>""" + processMap.totalCount + """</td>
+                  </tr>
+         </table><br>
+         
+        Thank You,<br>
+        Team ignio<br><br>
+        <hr style="border: none; border-top: 1px solid #cccccc; margin: 20px 0;">
+        <i style="color: #888888;">Note: This is an automatically generated mail. Please do not reply.</i>
+        </body></html>
+    """
+ 
+    def file = new File(fileName)
+    file.write(processMap.report)
+    file.setReadOnly()
+ 
+    def MAX_SIZE = 10000000L
+    if (file.size() < MAX_SIZE) {
+        org.springframework.web.multipart.MultipartFile[] filesForAttachment = fileUtils.createMultiPartFileFromFile(file)
+        iAction.Collaboration.SendMail(
+            Body: emailBody,
+            Subject: processMap.emailsubject,
+            To: processMap.emailTo,
+            CC: processMap.emailCC,
+            hasAttachment: filesForAttachment
+        )
+        LOG.error("Email sent with license report.")
+        processMap.status = 0
+    } else {
+        LOG.error("Attachment too large: " + file.size())
+        processMap.status = 1
+    }
+ 
+    file.delete()
+}
+.to({ processMap.status == 0 }, "SUCCESS")
+.elseTo("ERROR")
+ 
+step("ignioNodeFailMail", StepType.ONIGNIO){
+    //LOG.error("########################################################## Executing Step 2 ###################################################################")
+    
+        Mailbody = """
+    <html>
+    <body>
+    <p>Dear User,<br><br> ignio Parent vCenter Node not available to Connect. Kindly Check and resolve</p>
+    <br><br>Thank You,<br>Team ignio
+    
+    <br><br><hr style="border: none; border-top: 1px solid #cccccc; margin: 20px 0;">
+        <i style="color: #888888;">Note: This is an automatically generated mail. Please do not reply.</i>
+    </body>
+    </html>
+    """
+ 
+    emailSubject = "VC Datastore Report"
+    iAction.Collaboration.SendMail(
+        Body: emailBody,
+            Subject: processMap.emailsubject,
+            To: processMap.emailTo,
+            CC: processMap.emailCC)
+    processMap.StepTwoOutput=0
+}.to({processMap.StepTwoOutput==0},"SUCCESS")
+.elseTo("ERROR")
+ 
+step("FailureSendMail", StepType.ONIGNIO){
+ 
+    LOG.error("########################################################## Executing Step Failure Send Mail ###################################################################") 
+    try{
+        Mailbody = """
+    <html>
+    <body>
+    <p>Dear User,<br><br> ignio is Unable to process the task. ignio Parent vCenter Node is failed to Connect. Kindly Check and resolve</p>
+    <br><br>Thank You,<br>Team ignio
+    
+    <br><br><hr style="border: none; border-top: 1px solid #cccccc; margin: 20px 0;">
+        <i style="color: #888888;">Note: This is an automatically generated mail. Please do not reply.</i>
+    </body>
+    </html>
+    """
+ 
+    emailSubject = "VC Datastore Report"
+    iAction.Collaboration.SendMail(
+        Body: emailBody,
+            Subject: processMap.emailsubject,
+            To: processMap.emailTo,
+            CC: processMap.emailCC
+    )
+    processMap.StepTwoOutput=0
+}
+catch(e){
+        processMap.log = "Unable to send Mail with failure reason, IO Error: " + e.message
+        processMap.exitCode = 1;
+    }
+}.to({processMap.StepTwoOutput==0},"SUCCESS")
+.elseTo("ERROR")
+
+
+end("SUCCESS", Status.SUCCESS) {  
+    /*outputMap << [  
+        outputStream: "vCenter license report mail sent successfully.\n" +
+                      "Success Count: " + processMap.successCount + "\n" +
+                      "Failure Count: " + processMap.failedCount + " (includes No License Found, Connection Failed, Exception, and other errors)\n" +
+                      "No License Found Count: " + processMap.noLicenseCount + "\n" +
+                      "Connection Failed Count: " + processMap.connectionFailedCount + "\n" +
+                      "Exception Count: " + processMap.exceptionCount + "\n" +
+                      "Total Count: " + processMap.totalCount 
+    ]  */
+    outputMap << [
+        outputStream: "vCenter license report mail sent successfully.\nSuccess Count: " +processMap.successCount+ "\nFailure Count: " +processMap.failedCount+ "\nTotal Count: "+processMap.totalCount
+    ]
+}  
+ 
+end("ERROR", Status.ERROR) {  
+    /*outputMap << [  
+        outputStream: "Failed to send license report.\n" +
+                      "Success Count: " + processMap.successCount + "\n" +
+                      "Failure Count: " + processMap.failedCount + " (includes No License Found, Connection Failed, Exception, and other errors)\n" +
+                      "No License Found Count: " + processMap.noLicenseCount + "\n" +
+                      "Connection Failed Count: " + processMap.connectionFailedCount + "\n" +
+                      "Exception Count: " + processMap.exceptionCount + "\n" +
+                      "Total Count: " + processMap.totalCount  
+    ]  */
+    outputMap << [
+        outputStream: "Failed to send license report.\nSuccess Count: " +processMap.successCount+ "\nFailure Count: " +processMap.failedCount+ "\nTotal Count: "+processMap.totalCount
+    ]
+    
+}
+
+
+
+
+
+
+
+
+/*init {
+    currentdate = inputMap.currentdate
+    emailCC = inputMap.emailCC
+    emailTo = inputMap.emailTo
+    emailsubject = inputMap.emailsubject
+ 
+    vCenterIPs = inputMap.vCenterIPs
+    vCenterName =inputMap.vCenterName
+    ParentvCenter = inputMap.ParentvCenter
+    index = 0
+ 
+    totalCount = 0
+    successCount = 0
+    failedCount = 0
+ 
+    //report = "vCenterIP,Scope,Name,EditionKey,LicenseKey,Total,Used,ExpirationDate,CostUnit,ProductName,ProductVersion\n"
+    report = "VCenterName,VCenterIP,HostIP,Scope,Name,EditionKey,LicenseKey,Total,Used,ExpirationDate,CostUnit,ProductName,ProductVersion\n"
+}
+
+step("CheckNodeAvailablity", StepType.ONIGNIO) {
+    LOG.error("########################################################## Executing Step 1 ###################################################################")
+    try {  
+        subject.ignioNodeAvailabilityCheck(
+            vCenterName: processMap.ParentvCenter,
+            ioutput: "CheckNodeAvailablity_output"
+        )
+    } catch(e) {
+        processMap.log = "Unable to Check vCenter ignio Node present or not, IO Error: " + e.message
+        processMap.exitCode = 1
+    }
+}.to({ processMap.CheckNodeAvailablity_output.returnCode == 0 }, "CheckNextVC")
+.elseTo("ERROR")
+ 
+step("CheckNextVC", StepType.ONIGNIO) {
+    if (processMap.index < processMap.vCenterIPs.size()) {
+        processMap.nextStep = "FetchLicense"
+    } else {
+        processMap.nextStep = "SendEmail"
+    }
+}
+.to({ processMap.nextStep == "FetchLicense" }, "FetchLicense")
+.to({ processMap.nextStep == "SendEmail" }, "SendEmail")
+ 
+step("FetchLicense", StepType.ONFUNCTION) {
+    
+    //def vCenter = processMap.CheckNodeAvailablity_output.vCenterName
+            def vCenterUserName = processMap.CheckNodeAvailablity_output.userName
+            LOG.error(vCenterUserName)
+            def vCenterPassword = processMap.CheckNodeAvailablity_output.Password
+            LOG.error(vCenterPassword)
+        
+    def vcenterIP = processMap.vCenterIPs[processMap.index]  // This is the dynamic input
+    def vcentername = processMap.vCenterName[processMap.index]
+    //LOG.error("Processing vCenterName :" +vcentername)
+    //LOG.error("Processing vCenterip :" +vcenterIP)
+    LOG.error("Processing vCenterName: " + vcentername + ", vCenterIP: " + vcenterIP)
+    
+    Map<String, Object> entityMap = new HashMap<>()
+    entityMap.put("IPAddress", "172.30.32.181")  // Static proxy entity IP
+    Set<String> entityLabels = new HashSet<>()
+    entityLabels.add("Windows")  // Adjust this label as per your blueprint tag
+    
+    def entityInstance = ceb.get(entityLabels, entityMap)
+    def entity = ceb.get(entityInstance.getId(), entityLabels)
+ 
+    // Now pass the vCenter IP as input to the function
+    entity.fetch_vCenter_Host_Licenses(
+        vCenterUserName: vCenterUserName,
+            vCenterPassword: vCenterPassword,
+            ip: vcenterIP, 
+            vCName: vcentername, 
+            ioutput: "output_report")
+
+
+}
+.to({ true }, "AppendReport")
+
+step("AppendReport", StepType.ONIGNIO) {
+    def ip = processMap.vCenterIPs[processMap.index]
+    def vcenterName = processMap.vCenterName[processMap.index]
+
+    if (processMap.output_report?.outputStream) {
+        processMap.report += processMap.output_report.outputStream+ "\n"
+        processMap.successCount++
+        processMap.totalCount++
+    } else {
+        def errStream = processMap.output_report?.errorStream ?: "Unknown Error"
+        errStream = errStream.replaceAll("[\\r\\n]+", " ").replace(",", " ")
+        //processMap.report += ip + ",Error: " + errStream + "\n"
+        //processMap.report +=  vcenterName+ ip+ ",Error: " + errStream + ", , , , , , , , ,bbbb \n"
+        processMap.report += vcenterName +","+ ip + ",,,ERROR: " + errStream + ",,,,,,,\n"
+        processMap.failedCount++
+        processMap.totalCount++
+    }
+
+    processMap.index++
+}.to({ true }, "CheckNextVC")
+.elseTo("ERROR")
+ 
+ 
+step("SendEmail", StepType.ONIGNIO) {
+    def date = processMap.currentdate
+    def fileName = "VMware_License_Report_" + date + ".csv"
+    def emailBody = """
+        <html><body>
+        Dear User,<br><br>
+        ignio has generated the <b>VMware License Report</b> as of <b>""" +date+ """</b>.<br><br>
+        Thank You,<br>
+        Team ignio<br><br>
+        <hr style="border: none; border-top: 1px solid #cccccc; margin: 20px 0;">
+        <i style="color: #888888;">Note: This is an automatically generated mail. Please do not reply.</i>
+        </body></html>
+    """
+ 
+    def file = new File(fileName)
+    file.write(processMap.report)
+    file.setReadOnly()
+ 
+    def MAX_SIZE = 10000000L
+    if (file.size() < MAX_SIZE) {
+        org.springframework.web.multipart.MultipartFile[] filesForAttachment = fileUtils.createMultiPartFileFromFile(file)
+        iAction.Collaboration.SendMail(
+            Body: emailBody,
+            Subject: processMap.emailsubject,
+            To: processMap.emailTo,
+            CC: processMap.emailCC,
+            hasAttachment: filesForAttachment
+        )
+        LOG.error("Email sent with license report.")
+        processMap.status = 0
+    } else {
+        LOG.error("Attachment too large: " + file.size())
+        processMap.status = 1
+    }
+ 
+    file.delete()
+}
+.to({ processMap.status == 0 }, "SUCCESS")
+.elseTo("ERROR")
+ 
+end("SUCCESS", Status.SUCCESS) {
+    outputMap << [
+        outputStream: "vCenter license report mail sent successfully.\nSuccess Count: " +processMap.successCount+ "\nFailure Count: " +processMap.failedCount+ "\nTotal Count: "+processMap.totalCount
+    ]
+}
+ 
+end("ERROR", Status.ERROR) {
+    outputMap << [
+        outputStream: "Failed to send license report.\nSuccess Count: " +processMap.successCount+ "\nFailure Count: " +processMap.failedCount+ "\nTotal Count: "+processMap.totalCount
+    ]
+}
+
+
+
+
+
+
+/*init {
+    currentdate = inputMap.currentdate
+    emailCC = inputMap.emailCC
+    emailTo = inputMap.emailTo
+    emailsubject = inputMap.emailsubject
+ 
+    vCenterIPs = inputMap.vCenterIPs
+    vCenterName =inputMap.vCenterName
+    index = 0
+ 
+    totalCount = 0
+    successCount = 0
+    failedCount = 0
+ 
+    //report = "vCenterIP,Scope,Name,EditionKey,LicenseKey,Total,Used,ExpirationDate,CostUnit,ProductName,ProductVersion\n"
+    report = "VCenterName,VCenterIP,HostIP,Scope,Name,EditionKey,LicenseKey,Total,Used,ExpirationDate,CostUnit,ProductName,ProductVersion\n"
+}
+ 
+step("CheckNextVC", StepType.ONIGNIO) {
+    if (processMap.index < processMap.vCenterIPs.size()) {
+        processMap.nextStep = "FetchLicense"
+    } else {
+        processMap.nextStep = "SendEmail"
+    }
+}
+.to({ processMap.nextStep == "FetchLicense" }, "FetchLicense")
+.to({ processMap.nextStep == "SendEmail" }, "SendEmail")
+ 
+step("FetchLicense", StepType.ONFUNCTION) {
+    
+    def vcenterIP = processMap.vCenterIPs[processMap.index]  // This is the dynamic input
+    def vcentername = processMap.vCenterName[processMap.index]
+    //LOG.error("Processing vCenterName :" +vcentername)
+    //LOG.error("Processing vCenterip :" +vcenterIP)
+    LOG.error("Processing vCenterName: " + vcentername + ", vCenterIP: " + vcenterIP)
+    
+    Map<String, Object> entityMap = new HashMap<>()
+    entityMap.put("IPAddress", "172.16.11.211")  // Static proxy entity IP
+    Set<String> entityLabels = new HashSet<>()
+    entityLabels.add("Windows")  // Adjust this label as per your blueprint tag
+    
+    def entityInstance = ceb.get(entityLabels, entityMap)
+    def entity = ceb.get(entityInstance.getId(), entityLabels)
+ 
+    // Now pass the vCenter IP as input to the function
+    entity.fetch_vCenter_Host_Licenses(ip: vcenterIP, vCName: vcentername, ioutput: "output_report")
+}
+.to({ true }, "AppendReport")
+
+step("AppendReport", StepType.ONIGNIO) {
+    def ip = processMap.vCenterIPs[processMap.index]
+    def vcenterName = processMap.vCenterName[processMap.index]
+
+    if (processMap.output_report?.outputStream) {
+        processMap.report += processMap.output_report.outputStream+ "\n"
+        processMap.successCount++
+        processMap.totalCount++
+    } else {
+        def errStream = processMap.output_report?.errorStream ?: "Unknown Error"
+        errStream = errStream.replaceAll("[\\r\\n]+", " ").replace(",", " ")
+        //processMap.report += ip + ",Error: " + errStream + "\n"
+        //processMap.report +=  vcenterName+ ip+ ",Error: " + errStream + ", , , , , , , , ,bbbb \n"
+        processMap.report += vcenterName +","+ ip + ",,,ERROR: " + errStream + ",,,,,,,\n"
+        processMap.failedCount++
+        processMap.totalCount++
+    }
+
+    processMap.index++
+}.to({ true }, "CheckNextVC")
+.elseTo("ERROR")
+ 
+ 
+step("SendEmail", StepType.ONIGNIO) {
+    def date = processMap.currentdate
+    def fileName = "VMware_License_Report_" + date + ".csv"
+    def emailBody = """
+        <html><body>
+        Dear User,<br><br>
+        ignio has generated the <b>VMware License Report</b> as of <b>""" +date+ """</b>.<br><br>
+        Thank You,<br>
+        Team ignio<br><br>
+        <hr style="border: none; border-top: 1px solid #cccccc; margin: 20px 0;">
+        <i style="color: #888888;">Note: This is an automatically generated mail. Please do not reply.</i>
+        </body></html>
+    """
+ 
+    def file = new File(fileName)
+    file.write(processMap.report)
+    file.setReadOnly()
+ 
+    def MAX_SIZE = 10000000L
+    if (file.size() < MAX_SIZE) {
+        org.springframework.web.multipart.MultipartFile[] filesForAttachment = fileUtils.createMultiPartFileFromFile(file)
+        iAction.Collaboration.SendMail(
+            Body: emailBody,
+            Subject: processMap.emailsubject,
+            To: processMap.emailTo,
+            CC: processMap.emailCC,
+            hasAttachment: filesForAttachment
+        )
+        LOG.error("Email sent with license report.")
+        processMap.status = 0
+    } else {
+        LOG.error("Attachment too large: " + file.size())
+        processMap.status = 1
+    }
+ 
+    file.delete()
+}
+.to({ processMap.status == 0 }, "SUCCESS")
+.elseTo("ERROR")
+ 
+end("SUCCESS", Status.SUCCESS) {
+    outputMap << [
+        outputStream: "vCenter license report mail sent successfully.\nSuccess Count: " +processMap.successCount+ "\nFailure Count: " +processMap.failedCount+ "\nTotal Count: "+processMap.totalCount
+    ]
+}
+ 
+end("ERROR", Status.ERROR) {
+    outputMap << [
+        outputStream: "Failed to send license report.\nSuccess Count: " +processMap.successCount+ "\nFailure Count: " +processMap.failedCount+ "\nTotal Count: "+processMap.totalCount
+    ]
+}*/
