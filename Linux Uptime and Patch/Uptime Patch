@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# Get hostname
+hostname=$(hostname)
+
+# Get IP address (excluding loopback and docker interfaces)
+ip_address=$(hostname -I | awk '{print $1}')
+
+# Get last reboot time
+last_reboot=$(who -b | awk '{print "system boot", $3, $4}')
+
+# Get last kernel patch update
+last_patch=$(rpm -qa --last kernel | head -1 | awk '{$1=$1};1')
+
+# Print as CSV with headers
+# echo "Hostname,IP Address,Last Reboot,Last Patch Update"
+
+echo "$hostname,$ip_address,$last_reboot,$last_patch"
