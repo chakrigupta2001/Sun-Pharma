@@ -1,0 +1,441 @@
+// =======================================
+// Pre Block : Initialization & Input Data
+// =======================================
+
+// Set current date for file naming and email subject
+def tz = TimeZone.getTimeZone("Asia/Kolkata")
+def currentdate = new Date().format("dd-MMM-yy HH:mm:ss", tz)
+inputMap.currentdate = currentdate
+
+// Fetch email subject from reference table and append date
+def subject = RefDataQuery.from("Linux_Mail_Recipients").where(RefDataCriteria.exp("key").equalTo("subject")).execute()[0].values.trim()
+inputMap.emailsubject = "Linux Normal User Report - " + currentdate
+
+// Fetch "To" recipients list from reference table
+def to = RefDataQuery.from("Linux_Mail_Recipients")
+             .where(RefDataCriteria.exp("key").equalTo("emailto"))
+             .execute()[0].values.trim()
+inputMap.emailTo = to
+ 
+// Fetch "CC" recipients list from reference table
+def cc = RefDataQuery.from("Linux_Mail_Recipients")
+             .where(RefDataCriteria.exp("key").equalTo("emailcc"))
+             .execute()[0].values.trim()
+inputMap.emailCC = cc
+
+
+// Get all IPs from reference table
+def rows = RefDataQuery.from("Linux_IPs_List").execute()
+ 
+inputMap.RHEL5_IPList = rows.findAll { it["OSFlavor"] == "RHEL5" }*.IPAddress
+inputMap.Linux_IPs_List =rows.findAll { it["OSFlavor"] == "Linux" }*.IPAddress
+inputMap.RHEL7_IPList = rows.findAll { it["OSFlavor"] == "RHEL7" }*.IPAddress
+inputMap.RHEL8_IPList = rows.findAll { it["OSFlavor"] == "RHEL8" }*.IPAddress
+inputMap.RHEL9_IPList = rows.findAll { it["OSFlavor"] == "RHEL9" }*.IPAddress
+inputMap.SLES15_IPList = rows.findAll { it["OSFlavor"] == "SLES15" }*.IPAddress
+inputMap.SLES12_IPList = rows.findAll { it["OSFlavor"] == "SLES12" }*.IPAddress
+inputMap.SLES11_IPList = rows.findAll { it["OSFlavor"] == "SLES11" }*.IPAddress
+inputMap.Ubuntu22_IPList = rows.findAll { it["OSFlavor"] == "Ubuntu22" }*.IPAddress
+inputMap.Ubuntu20_IPList = rows.findAll { it["OSFlavor"] == "Ubuntu20" }*.IPAddress
+inputMap.CentOS8_IPList = rows.findAll { it["OSFlavor"] == "CentOS8" }*.IPAddress
+inputMap.CentOS7_IPList = rows.findAll { it["OSFlavor"] == "CentOS7" }*.IPAddress
+inputMap.CentOS6_IPList = rows.findAll { it["OSFlavor"] == "CentOS6" }*.IPAddress
+
+
+
+//inputMap.RHEL9_IPList = ["172.16.9.63"]
+
+
+/*
+inputMap.RHEL5_IPList = []
+inputMap.RHEL7_IPList = ["172.16.15.109"]
+inputMap.RHEL8_IPList = ["172.30.32.186", "172.30.32.187"]
+inputMap.RHEL9_IPList = ["172.16.9.63", "172.16.11.165", "172.16.11.162"]*/
+
+
+/***********************************************************************************************
+ * Use Case Name       : Linux Normal User Account Report
+ * Objective           : To generate a consolidated report of all normal user accounts 
+ *                       across various Linux servers segmented by OS flavor.
+ *
+ * Detailed Description:
+ *      - This iWorkflow connects to multiple Linux servers grouped by OS flavor.
+ *      - Executes an atomic function to fetch normal user accounts from /etc/passwd.
+ *      - Filters users with UID >= 1000 (excluding system and service accounts).
+ *      - Formats the output as a CSV report containing hostname, IP, and usernames.
+ *      - Maintains success/failure/total counts for IP processing.
+ *      - Sends the consolidated CSV as an email attachment to predefined recipients.
+ *
+ * Inputs:
+ *  - Reference Data:
+ *       1. Linux_Mail_Recipients : Contains email subject, To, and CC recipients.
+ *       2. Linux_IPs_List        : Contains IP addresses mapped to OS flavors.
+ *  - System Date (for filename and email subject formatting).
+ *
+ * Outputs:
+ *  - CSV File           : Hostname, IP Address, Normal Users.
+ *  - Email Notification : Sent to recipients with the report attached.
+ *  - Ignio Output Log   : Summary with success/failure counts.
+ *
+ * Purpose:
+ *      To identify all non-system user accounts present across Linux servers, 
+ *      aiding audit, compliance, and security by reporting normal user activity scope.
+ *
+ * Author             : Chakravarthi Pulikonda
+ * Version            : 1.0
+ * Date Created       : 04-Aug-2025
+ * Last Modified By   : August 2025
+ * Last Modified      : August 2025
+ ***********************************************************************************************/
+ 
+
+// ==============================================================================================================================
+// Step: init
+// Purpose:
+// - Initialize all runtime variables.
+// - Fetch input data from inputMap and store in processMap.
+// - Prepare the Linux OS flavor list and their corresponding IP address lists.
+// - Set counters for total, success, and failed IPs.
+// - Initialize the CSV report header.
+// ==============================================================================================================================
+init {
+
+// Load metadata from inputMap
+    currentdate   = inputMap.currentdate       // Current date for report timestamp
+    emailCC       = inputMap.emailCC           // Email CC recipients
+    emailTo       = inputMap.emailTo           // Email TO recipients
+    emailsubject  = inputMap.emailsubject      // Email subject line
+
+    
+    // Define list of OS flavors to be processed
+
+    flavours = ["RHEL5", "Linux", "RHEL7", "RHEL8", "RHEL9", "CentOS8" , "CentOS7" , "CentOS6" , "SLES15", "SLES12", "SLES11", "Ubuntu22", "Ubuntu20"]
+    
+    flavourIndex = 0        // Index to track current OS flavor
+    index_ip     = 0       // Index to track current IP within the flavor list
+
+    // Load IP lists for each OS flavor from Pre-Processing Block 
+    rhel5List       = inputMap.RHEL5_IPList
+    LinuxList       = inputMap.Linux_IPs_List
+    rhel7List       = inputMap.RHEL7_IPList
+    rhel8List       = inputMap.RHEL8_IPList
+    rhel9List       = inputMap.RHEL9_IPList
+    SLES15List      = inputMap.SLES15_IPList
+    SLES12List      = inputMap.SLES12_IPList
+    SLES11List      = inputMap.SLES11_IPList
+    Ubuntu22_IPList = inputMap.Ubuntu22_IPList
+    Ubuntu20_IPList = inputMap.Ubuntu20_IPList
+    CentOS8_IPList  = inputMap.CentOS8_IPList
+    CentOS7_IPList  = inputMap.CentOS7_IPList
+    CentOS6_IPList  = inputMap.CentOS6_IPList
+    
+    // Initialize working variables
+    IPList         = []       // Current list of IPs being processed
+    currentFlavour = ""       // Current OS flavor being processed
+    
+    // Initialize counters for tracking progress
+    totalIps    = 0       // Total number of IPs processed
+    successIPs  = 0       // Number of successful executions
+    failedIPs   = 0       // Number of failed executions
+
+    // Initialize report header (CSV format)
+    report = "Hostname,IP Address,Username\n"
+}
+ 
+
+// ==============================================================================================================================
+// Step: SetNextFlavour
+// Purpose:
+// - Select the next Linux OS flavor to process.
+// - Based on the flavor, assign the corresponding IP list to processMap.IPList.
+// - Update currentFlavour in processMap.
+// - Reset IP index (index_ip) to 0 for new flavor processing.
+// ==============================================================================================================================
+step("SetNextFlavour", StepType.ONIGNIO) {
+    def flavour = processMap.flavours[processMap.flavourIndex]
+    processMap.currentFlavour = flavour
+ 
+    switch(flavour) {
+        case "RHEL5":
+            processMap.IPList = processMap.rhel5List
+            LOG.error("Processing Linux Flavour : RHEL5")
+            break
+        case "Linux":
+            processMap.IPList = processMap.LinuxList
+            LOG.error("Processing Linux Flavour : Linux")
+            break
+        case "RHEL7":
+            processMap.IPList = processMap.rhel7List
+            LOG.error("Processing Linux Flavour : RHEL7")
+            break
+        case "RHEL8":
+            processMap.IPList = processMap.rhel8List
+            LOG.error("Processing Linux Flavour : RHEL8")
+            break
+        case "RHEL9":
+            processMap.IPList = processMap.rhel9List
+            LOG.error("Processing Linux Flavour : RHEL9")
+            break
+        case "SLES15":
+            processMap.IPList = processMap.SLES15_IPList
+            LOG.error("Processing Linux Flavour : SLES15")
+            break
+        case "SLES12":
+            processMap.IPList = processMap.SLES12_IPList
+            LOG.error("Processing Linux Flavour : SLES12")
+            break
+        case "SLES11":
+            processMap.IPList = processMap.SLES11_IPList
+            LOG.error("Processing Linux Flavour : SLES11")
+            break
+        case "Ubuntu22":
+            processMap.IPList = processMap.Ubuntu22_IPList
+            LOG.error("Processing Linux Flavour : SLES15")
+            break
+        case "Ubuntu20":
+            processMap.IPList = processMap.Ubuntu20_IPList
+            LOG.error("Processing Linux Flavour : SLES15")
+            break
+        case "CentOS8":
+            processMap.IPList = processMap.CentOS8_IPList
+            LOG.error("Processing Linux Flavour : CentOS8")
+            break
+        case "CentOS7":
+            processMap.IPList = processMap.CentOS7_IPList
+            LOG.error("Processing Linux Flavour : CentOS7")
+            break
+        case "CentOS6":
+            processMap.IPList = processMap.CentOS6_IPList
+            LOG.error("Processing Linux Flavour : CentOS6")
+            break
+    }
+ 
+    processMap.index_ip = 0
+}
+.to({true}, "CheckNextIP")
+ 
+
+// ==============================================================================================================================
+// Step: CheckNextIP
+// Purpose:
+// - Check if more IPs are left to process in the current flavor.
+// - If yes, proceed to fetch data from the next IP (FetchNormalUsers).
+// - If no, check if any more flavors are left.
+// - If more flavors exist, move to the next flavor (SetNextFlavour).
+// - Else, end execution by sending the report (SendEmailReport).
+// ==============================================================================================================================
+step("CheckNextIP", StepType.ONIGNIO) {
+    def ipCount = processMap.IPList.size()
+    def flavourCount = processMap.flavours.size()
+ 
+    if (processMap.index_ip < ipCount) {
+        processMap.nextStep = "FetchNormalUsers"
+    } else if (processMap.flavourIndex + 1 < flavourCount) {
+        processMap.flavourIndex++
+        processMap.nextStep = "SetNextFlavour"
+    } else {
+        processMap.nextStep = "SendEmailReport"
+    }
+}
+.to({ processMap.nextStep == "FetchNormalUsers" }, "FetchNormalUsers")
+.to({ processMap.nextStep == "SetNextFlavour" }, "SetNextFlavour")
+.to({ processMap.nextStep == "SendEmailReport" }, "SendEmailReport")
+ 
+
+
+// ==============================================================================================================================
+// Step: FetchNormalUsers
+// Purpose:
+// - Fetch data from the current IP using Ignio entity function Fetch_Linux_normal_users.
+// - Set the flavor-specific label for proper entity identification.
+// - Store function result in output_report.
+// ==============================================================================================================================
+step("FetchNormalUsers", StepType.ONFUNCTION) {
+    def ip = processMap.IPList[processMap.index_ip]
+ 
+    Map<String, Object> entityMap = new HashMap<>()
+    entityMap.put("IPAddress", ip)
+    Set<String> entityLabels = new HashSet<>()
+    entityLabels.add(processMap.currentFlavour)
+ 
+    def entityInstance = ceb.get(entityLabels, entityMap)
+    def entity = ceb.get(entityInstance.getId(), entityLabels)
+ 
+    entity.Fetch_Linux_normal_users(ioutput: "output_report")
+}
+.to({true}, "NextIP")
+ 
+
+// ==============================================================================================================================
+// Step: NextIP
+// Purpose:
+// - Evaluate the result from FetchNormalUsers.
+// - If successful, append the data to the report and increment successIPs.
+// - If failed, log the error in report and increment failedIPs.
+// - Increment the IP index and update the totalIps counter.
+// ==============================================================================================================================
+step("NextIP", StepType.ONIGNIO) {
+    def ip = (processMap.index_ip < processMap.IPList.size()) ? processMap.IPList[processMap.index_ip] : "Unknown IP"
+ 
+    if (processMap.output_report?.outputStream) {
+        processMap.successIPs += 1
+        processMap.report += processMap.output_report.outputStream
+    } else {
+        def errStream = processMap.output_report?.errorStream ?: "Unknown Error/ No Data available"
+        errStream = errStream.replaceAll("[\\r\\n]+", " ").replace(",", " ")
+        processMap.report += "Unknown," + ip + ",Error: " + errStream + "\n"
+        processMap.failedIPs += 1
+    }
+    
+    LOG.error("Processed IP: " + ip)
+    processMap.index_ip++
+    processMap.totalIps += 1
+}
+.to({true}, "CheckNextIP")
+
+
+// ==============================================================================================================================
+// Step: SendEmailReport
+// Purpose:
+// - Generate the final CSV report file.
+// - Construct the email body with appropriate subject and body content.
+// - If file size is within acceptable limits, send email with the report as attachment.
+// - If file size exceeds threshold, do not send and set failure status.
+// - Delete the temporary file after sending or skipping email.
+// ==============================================================================================================================
+// version 1.0 
+step("SendEmailReport", StepType.ONIGNIO) {
+    def date = processMap.currentdate
+    def reportName = "Linux_NormalUserReport_" + date + ".csv"
+    def emailBody = """
+    <html>
+      <body>
+        Dear User,<br><br>
+        ignio has generated the <b>Linux Normal Users Report</b> as of <b>""" +date+ """</b>.<br><br>
+        
+        <h3>Linux Normal Users Summary</h3>
+        <table cellpadding="6" cellspacing="0" border="0" style="background-color: #f9f9f9; border: 1px solid #dddddd; border-radius: 6px;">
+                  <tr>
+                    <td><b>Success Count:</b></td>
+                    <td>""" + processMap.successIPs + """</td>
+                  </tr>
+                  <tr>
+                    <td><b>Failure Count:</b></td>
+                    <td>""" + processMap.failedIPs + """</td>
+                  </tr>
+                  <tr>
+                    <td><b>Total Count:</b></td>
+                    <td>""" + processMap.totalIps + """</td>
+                  </tr>
+         </table><br>
+        
+        Thank You,<br>
+        Team ignio<br><br>
+        <hr style='border: none; border-top: 1px solid #cccccc; margin: 20px 0;'>
+        <i style='color: #888888;'>Note: This is an automatically generated mail. Please do not reply.</i>
+       </body>
+    </html> """     
+  
+ 
+    def file = new File(reportName)
+    file.write(processMap.report)
+    file.setReadOnly()
+ 
+    def MAX_SIZE = 10000000L
+    def fileSize = file.size()
+ 
+    if (fileSize < MAX_SIZE) {
+        org.springframework.web.multipart.MultipartFile[] filesForAttachment = fileUtils.createMultiPartFileFromFile(file)
+        iAction.Collaboration.SendMail(
+            Body: emailBody,
+            Subject: processMap.emailsubject,
+            To: processMap.emailTo,
+            CC: processMap.emailCC,
+            hasAttachment: filesForAttachment
+        )
+        LOG.error("Email sent successfully with attachment.")
+        processMap.status = 0
+    } else {
+        LOG.error("Attachment too large to send: " + fileSize)
+        processMap.status = 1
+    }
+ 
+    file.delete()
+}
+.to({ processMap.status == 0 }, "SUCCESS")
+.elseTo("ERROR") 
+ 
+/*step("SendEmailReport", StepType.ONIGNIO) {
+    def date = processMap.currentdate
+    def reportName = "SudoUserReport_" + date + ".csv"
+ 
+    def emailBody = "<html><body>" +
+        "Dear User,<br><br>" +
+        "ignio has generated the <b>Sudo Users Report</b> as of <b>" + date + "</b>.<br><br>" +
+        "Success Count: " + processMap.successIPs + "<br>" +
+        "Failure Count: " + processMap.failedIPs + "<br>" +
+        "Total Count: " + processMap.totalIps + "<br><br>" +
+        "Thank You,<br>" +
+        "Team ignio<br><br>" +
+        "<hr style=\"border: none; border-top: 1px solid #cccccc; margin: 20px 0;\">" +
+        "<i style=\"color: #888888;\">Note: This is an automatically generated mail. Please do not reply.</i>" +
+        "</body></html>"
+ 
+    def file = new File(reportName)
+    file.write(processMap.report)
+    file.setReadOnly()
+ 
+    def MAX_SIZE = 10_000_000L // 10MB
+    def fileSize = file.size()
+ 
+    try {
+        if (fileSize < MAX_SIZE) {
+            org.springframework.web.multipart.MultipartFile[] filesForAttachment = fileUtils.createMultiPartFileFromFile(file)
+ 
+            if (filesForAttachment != null && filesForAttachment.length > 0) {
+                iAction.Collaboration.SendMail(
+                    Body: emailBody,
+                    Subject: (processMap.emailsubject != null && !processMap.emailsubject.isEmpty()) ? processMap.emailsubject : ("Sudo User Report - " + date),
+                    To: processMap.emailTo ?: "default@example.com",
+                    CC: processMap.emailCC ?: "",
+                    hasAttachment: filesForAttachment
+                )
+                LOG.error("Email sent successfully with attachment.")
+                processMap.status = 0
+            } else {
+                LOG.error("Attachment creation failed. File might be empty or invalid.")
+                processMap.status = 1
+            }
+        } else {
+            LOG.error("Attachment too large to send: " + fileSize)
+            processMap.status = 1
+        }
+    } catch (Exception ex) {
+        LOG.error("Exception occurred while sending email: " + ex.message)
+        processMap.status = 1
+    } finally {
+        file.delete()
+    }
+}
+.to({ processMap.status == 0 }, "SUCCESS")
+.elseTo("ERROR")*/
+ 
+ 
+
+// ==============================================================================================================================
+// End States SUCCESS / ERROR
+// Purpose:
+//   - Return a success/ failure message with summary counts (success, failure, total).
+// ==============================================================================================================================
+end("SUCCESS", Status.SUCCESS) {
+    outputMap << [
+        outputStream: "Normal user report mail sent successfully.\nSuccess Count: " +processMap.successIPs+ "\nFailure Count: " +processMap.failedIPs+ "\nTotal Count: "+processMap.totalIps
+    ]
+}
+ 
+end("ERROR", Status.ERROR) {
+    outputMap << [
+        outputStream: "Failed to send Normal user report.\nSuccess Count: " +processMap.successIPs+ "\nFailure Count: " +processMap.failedIPs+ "\nTotal Count: " +processMap.totalIps
+    ]
+}
+ 
