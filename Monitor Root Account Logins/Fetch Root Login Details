@@ -1,0 +1,59 @@
+#!/bin/bash
+
+###############################################################################
+# Script Name: root_login_report.sh
+# Description: Generates a CSV-style report of root login activity for the
+#              previous month. Useful for auditing and monitoring purposes.
+# Author: Chakravarthy Pulikonda
+# Date: August 2025
+###############################################################################
+
+#-----------------------------#
+# Environment Initialization #
+#-----------------------------#
+
+# Get system hostname
+HOSTNAME=$(hostname)
+
+# Get primary IP address
+IP=$(hostname -I | awk '{print $1}')
+
+# Get previous month in abbreviated format (e.g., Jan, Feb)
+PREV_MONTH=$(date -d "$(date +%Y-%m-15) -1 month" +%b)
+
+#-----------------------------#
+# Root Login Data Collection #
+#-----------------------------#
+
+# Fetch root login entries from 'last' command filtered by previous month
+entries=$(last -F | grep "^root" | grep "$PREV_MONTH")
+
+#-----------------------------#
+# Output Formatting & Report #
+#-----------------------------#
+
+if [[ -n "$entries" ]]; then
+    # If entries exist, format and print them in CSV format
+    echo "$entries" | awk -v host="$HOSTNAME" -v ip="$IP" '
+    {
+        user = $1;
+        login_type = $2;
+        login_host = $3;
+        login_time = $4 " " $5 " " $6 " " $7;
+        logout_time = $10 " " $11 " " $12 " " $13;
+        duration = $15;
+
+        # Output format: hostname,user,login_type,login_time,logout_time,duration
+        print host "," user "," login_type "," login_time "," logout_time "," duration;
+    }'
+else
+    # If no entries found, return a placeholder CSV line
+    echo "$HOSTNAME,Unknown,$IP,No Data available/ No root logins are there,,"
+fi
+
+###############################################################################
+# Notes:
+# - This script assumes the 'last' command output format is consistent.
+# - Consider redirecting output to a file for archival or automation purposes.
+# - Can be scheduled via cron for monthly audits.
+###############################################################################

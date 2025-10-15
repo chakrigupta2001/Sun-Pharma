@@ -1,0 +1,48 @@
+#!/bin/bash
+
+###############################################################################
+# Script Name: Fetch_Linux_normal_users.sh
+# Description: Generates a CSV-style report listing all normal users with sudo
+#              access on the current Linux host. Useful for access audits.
+# Author: Chakravarthy Pulikonda
+# Date: August 2025
+###############################################################################
+
+#-----------------------------#
+# Environment Initialization #
+#-----------------------------#
+
+hostname=$(hostname)                          # Get system hostname
+ip=$(hostname -I | awk '{print $1}')         # Get primary IP address
+
+#-----------------------------#
+# Normal User Extraction Logic #
+#-----------------------------#
+
+# Extract sudo users from /etc/sudoers:
+# - Exclude comments (#), group entries (%), and empty lines
+# - Match lines containing 'ALL' (typical sudo permission pattern)
+# - Extract the first field (username)
+# - Remove duplicates and format as comma-separated list
+users=$(sudo grep -vE '^#|^%|^$' /etc/sudoers | awk '/ALL/ {print $1}' | sort -u | paste -sd "," - | sed 's/,/, /g')
+
+#-----------------------------#
+# Output Formatting & Report #
+#-----------------------------#
+
+# If no users found, return a placeholder message
+if [[ -n "$users" ]]; then
+    # Output format: hostname,IP address,"user1, user2, ..."
+    echo "$hostname,$ip,\"$users\""
+else
+    # Output fallback line when no users are found
+    echo "$hostname,$ip,\"No normal users found or insufficient privileges\""
+fi
+
+###############################################################################
+# Notes:
+# - This script assumes sudo permissions to read /etc/sudoers.
+# - It does not parse included files (e.g., /etc/sudoers.d/*).
+# - Can be extended to include group-based sudo access if needed.
+# - Useful for periodic audits or integration into iWorkflow automation.
+###############################################################################
