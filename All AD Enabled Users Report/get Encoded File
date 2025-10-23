@@ -1,0 +1,15 @@
+# Define the path and file name
+$path = $inputMap.path
+$fileName = $inputMap.fileName
+
+# Combine the path and file name to get the full file path
+$filePath = Join-Path -Path $path -ChildPath $fileName
+
+# Read the file content into a byte array
+$fileContent = [System.IO.File]::ReadAllBytes($filePath)
+
+# Encode the byte array to a Base64 string
+$base64String = [Convert]::ToBase64String($fileContent)
+
+# Output the Base64 string
+Write-Output $base64String
