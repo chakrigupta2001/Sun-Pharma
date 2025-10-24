@@ -50,7 +50,7 @@ foreach ($domain in $domainControllers) {
     while ((Get-Date) -lt $startTime.AddMinutes(10) -and -not $connected) {
         try {
             # --- Step 4: Retrieve disabled computers older than 60 days ---
-            Get-ADComputer -Filter { Enabled -eq $false -and WhenChanged -le $cutoffDate } `
+            Get-ADComputer -Filter { Enabled -eq $false -and WhenChanged -ge $cutoffDate } `
                 -Server $dcToUse `
                 -Credential $concreds1 `
                 -Properties Name, DNSHostName, IPv4Address, Enabled, LastLogonDate, LastLogonTimestamp, WhenCreated, WhenChanged, OperatingSystem, DistinguishedName, modifyTimeStamp |
